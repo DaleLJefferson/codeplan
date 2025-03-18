@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
 import Anthropic from "@anthropic-ai/sdk";
-import { parseArgs } from "util";
 import { existsSync } from "fs";
 import type { Usage } from "@anthropic-ai/sdk/resources/index.mjs";
 import { promises as fs } from "fs";
 import { globby } from "globby";
+import matter from "gray-matter";
 
 const systemPrompt = `You are software architect, respond to the users request in a single interaction (don't ask follow up questions). 
 You have a complete file tree, and the contents of relevant files (other files exist as per the file tree) to aid you in your response.
@@ -30,6 +30,8 @@ type Tree = {
 };
 
 function createTree(paths: string[]): Tree {
+  console.log(paths);
+
   const tree: Tree = {};
   paths.forEach((path) => {
     const parts = path.split("/").filter((part) => part !== "");
@@ -60,7 +62,7 @@ function printTree(tree: Tree, indent: string = ""): string {
 async function getFilesPaths(patterns: Array<string>): Promise<Array<string>> {
   return await globby(patterns, {
     gitignore: true,
-  });
+  }).then((files) => files.sort());
 }
 
 type FileData = {
@@ -155,38 +157,27 @@ function formatFilesContent(files: FileData[]): string {
 }
 
 async function main() {
-  const args = Bun.argv.slice(2);
-
-  const { values } = parseArgs({
-    args,
-    options: {
-      include: {
-        type: "string",
-        multiple: true,
-      },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
-
   // Delete plan.md if it exists
   if (existsSync("plan.md")) {
     await fs.unlink("plan.md");
   }
 
-  const patterns = [
-    ...((values.include as Array<string>) || []),
-    ".cursor/rules/**",
-  ];
+  const promptFilePath = "prompt.md";
 
-  console.log(patterns);
-
-  if (patterns.length === 0) {
-    console.log(
-      "Usage: bun run index.ts --include <glob1> [--include <glob2>] ..."
-    );
-    process.exit(1);
+  if (!existsSync(promptFilePath)) {
+    console.log(`No ${promptFilePath} file found`);
+    return;
   }
+
+  const promptFile = await Bun.file(promptFilePath).text();
+  const { data, content: promptText } = matter(promptFile);
+
+  const filePatterns = data.files || [];
+
+  // Always include cursor rules
+  const patterns = [...filePatterns, ".cursor/rules/**"];
+
+  await Bun.write(Bun.stdout, `Files to include: ${patterns.join(", ")}\n\n`);
 
   // We want to include all files in the file tree
   const allFiles = await getFilesPaths(["**"]);
@@ -205,20 +196,25 @@ async function main() {
   const lastWeekContents = formatFilesContent(lastWeek);
   const beforeContents = formatFilesContent(before);
 
-  const promptFilePath = "prompt.md";
-
-  if (!existsSync(promptFilePath)) {
-    console.log(`No ${promptFilePath} file found`);
-    return;
-  }
-
-  const promptText = await Bun.file(promptFilePath).text();
-
   await Bun.write(Bun.stdout, `Selected files:\n\n${selectedFiles}\n\n`);
 
-  // console.log(promptText);
-  // console.log(printTree(tree));
-  // console.log(todayContents, lastWeekContents, beforeContents);
+  // Ask for user confirmation before proceeding
+  await Bun.write(Bun.stdout, "Continue? (y/n): ");
+
+  for await (const chunk of Bun.stdin.stream()) {
+    const response = Buffer.from(chunk).toString().trim().toLowerCase();
+
+    if (response === "y") {
+      await Bun.write(Bun.stdout, "Making request...\n");
+      break;
+    } else if (response === "n") {
+      await Bun.write(Bun.stdout, "Stopping...\n");
+      process.exit(0);
+    } else {
+      await Bun.write(Bun.stdout, "Invalid input, please use y or n\n");
+      continue;
+    }
+  }
 
   let state: "thinking" | "text" | null = null;
 
