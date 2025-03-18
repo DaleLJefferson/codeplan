@@ -2,7 +2,7 @@
 
 A tool to query your codebase using Anthropic's Claude with full file tree context and specified files.
 
-![Overview](img/overview.png)
+![Overview](https://github.com/DaleLJefferson/repoquery/blob/main/img/overview.png)
 
 ## Quick Start
 
