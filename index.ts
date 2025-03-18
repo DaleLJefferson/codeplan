@@ -61,10 +61,6 @@ If changes to the codebase are required your role is to provide a comprehensive 
 Provide a list of files that need to be read to understand your response with comments explaining why each file needs to be read or modified.
 `;
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
-
 type Tree = {
   [key: string]: Tree;
 };
@@ -239,6 +235,27 @@ function calculateTokenUsageAndCost({
 }
 
 async function main() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  // Check if ANTHROPIC_API_KEY is set
+  if (!apiKey) {
+    console.error("\x1b[31mError: ANTHROPIC_API_KEY is not set\x1b[0m");
+    console.error(
+      "Please set your Anthropic API key in one of the following ways:"
+    );
+    console.error(
+      "  1. Create a .env file with ANTHROPIC_API_KEY=your_api_key_here"
+    );
+    console.error(
+      "  2. Export it in your shell: export ANTHROPIC_API_KEY=your_api_key_here"
+    );
+    process.exit(1);
+  }
+
+  const anthropic = new Anthropic({
+    apiKey,
+  });
+
   // Delete plan.md if it exists
   if (existsSync(RESPONSE_FILE)) {
     await fs.unlink(RESPONSE_FILE);
