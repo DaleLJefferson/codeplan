@@ -220,16 +220,14 @@ async function main() {
 
   let state: "thinking" | "text" | null = null;
 
-  const maxTokens = 128000;
-
   const message = await anthropic.messages
     .stream(
       {
         system: systemPrompt,
-        max_tokens: maxTokens,
+        max_tokens: 128_000,
         thinking: {
           type: "enabled",
-          budget_tokens: maxTokens - 1024,
+          budget_tokens: 32_000,
         },
         messages: [
           {
