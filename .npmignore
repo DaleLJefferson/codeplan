@@ -1,0 +1,8 @@
+img/
+node_modules/
+.git/
+.env
+.gitignore
+bun.lock
+response.md
+prompt.md

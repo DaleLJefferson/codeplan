@@ -2,9 +2,11 @@
 
 A tool to query your codebase using Anthropic's Claude with full file tree context and specified files.
 
+![Overview](img/overview.png)
+
 ## Quick Start
 
-```
+```bash
 # Add a .env file with your Anthropic API key or in your environment
 ANTHROPIC_API_KEY=your_api_key_here
 
@@ -67,7 +69,7 @@ repoquery --think
 - An Anthropic API key (Claude 3.7 Sonnet)
 - Create a `.env` file with:
 
-```
+```bash
 ANTHROPIC_API_KEY=your_api_key_here
 ```
 
