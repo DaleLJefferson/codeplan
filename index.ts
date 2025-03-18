@@ -214,8 +214,12 @@ function formatFilesContent(files: FileData[]): string {
 }
 
 async function main() {
+  const args = Bun.argv.slice(2);
+
+  console.log(args);
+
   const { values } = parseArgs({
-    args: Bun.argv.slice(2),
+    args,
     options: {
       include: {
         type: "string",
@@ -232,6 +236,8 @@ async function main() {
   }
 
   const patterns = (values.include as Array<string>) || [];
+
+  console.log(patterns);
 
   if (patterns.length === 0) {
     console.log(
