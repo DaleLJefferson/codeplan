@@ -216,8 +216,6 @@ function formatFilesContent(files: FileData[]): string {
 async function main() {
   const args = Bun.argv.slice(2);
 
-  console.log(args);
-
   const { values } = parseArgs({
     args,
     options: {
