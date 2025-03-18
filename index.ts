@@ -3,6 +3,7 @@ import { parseArgs } from "util";
 import { existsSync } from "fs";
 import type { Usage } from "@anthropic-ai/sdk/resources/index.mjs";
 import { promises as fs } from "fs";
+import { globby } from "globby";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -46,33 +47,25 @@ function printTree(tree: Tree, indent: string = ""): string {
   return result;
 }
 
-function getGitIndexFiles(patterns: Array<string>): Array<string> {
-  const result = Bun.spawnSync(["git", "ls-files", "-z", "--", ...patterns], {
-    cwd: process.cwd(),
+async function getFilesPaths(patterns: Array<string>): Promise<Array<string>> {
+  return await globby(patterns, {
+    gitignore: true,
   });
-
-  if (!result.success) {
-    throw new Error(`Git command failed: ${result.stderr.toString()}`);
-  }
-
-  const output = result.stdout.toString();
-  return output.split("\0").filter((file) => file !== "");
 }
 
-async function getFilesWithContent(patterns: Array<string>): Promise<{
-  today: Array<{ path: string; lastModified: number; content: string }>;
-  lastWeek: Array<{ path: string; lastModified: number; content: string }>;
-  before: Array<{ path: string; lastModified: number; content: string }>;
-}> {
-  const files = await Bun.readableStreamToText(
-    await Bun.spawn(["git", "ls-files", ...patterns]).stdout
-  ).then((text) => text.split("\n").filter(Boolean));
+type FileData = {
+  path: string;
+  lastModified: number;
+  content: string;
+};
 
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
+async function getFilesWithContent(
+  patterns: Array<string>
+): Promise<Array<FileData>> {
+  const files = await getFilesPaths(patterns);
 
   const fileData = await Promise.all(
-    files.map(async (path) => {
+    files.map(async (path: string) => {
       const file = Bun.file(path);
       const [content, lastModified] = await Promise.all([
         file.text(),
@@ -86,13 +79,26 @@ async function getFilesWithContent(patterns: Array<string>): Promise<{
     })
   );
 
-  const today = fileData.filter((file) => now - file.lastModified < dayMs);
-  const lastWeek = fileData.filter(
-    (file) =>
+  return fileData;
+}
+
+function splitFilesByDate(files: Array<FileData>): {
+  today: Array<FileData>;
+  lastWeek: Array<FileData>;
+  before: Array<FileData>;
+} {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  const today = files.filter(
+    (file: { lastModified: number }) => now - file.lastModified < dayMs
+  );
+  const lastWeek = files.filter(
+    (file: { lastModified: number }) =>
       now - file.lastModified >= dayMs && now - file.lastModified < 7 * dayMs
   );
-  const before = fileData.filter(
-    (file) => now - file.lastModified >= 7 * dayMs
+  const before = files.filter(
+    (file: { lastModified: number }) => now - file.lastModified >= 7 * dayMs
   );
 
   return { today, lastWeek, before };
@@ -132,6 +138,12 @@ function calculateTokenUsageAndCost({
   };
 }
 
+function formatFilesContent(files: FileData[]): string {
+  return files
+    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
+    .join("\n");
+}
+
 async function main() {
   const { values } = parseArgs({
     args: Bun.argv.slice(2),
@@ -159,23 +171,20 @@ async function main() {
     process.exit(1);
   }
 
-  const allFiles = getGitIndexFiles([]);
+  // We want to include all files in the file tree
+  const allFiles = await getFilesPaths(["**"]);
 
   const tree = createTree(allFiles);
 
-  const { today, lastWeek, before } = await getFilesWithContent(patterns);
+  console.log(printTree(tree));
 
-  const todayContents = today
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join("\n");
+  const filesWithContent = await getFilesWithContent(patterns);
 
-  const lastWeekContents = lastWeek
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join("\n");
+  const { today, lastWeek, before } = await splitFilesByDate(filesWithContent);
 
-  const beforeContents = before
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join("\n");
+  const todayContents = formatFilesContent(today);
+  const lastWeekContents = formatFilesContent(lastWeek);
+  const beforeContents = formatFilesContent(before);
 
   const promptFilePath = "prompt.md";
 
@@ -186,21 +195,23 @@ async function main() {
 
   const promptText = await Bun.file(promptFilePath).text();
 
-  //   console.log(promptText);
-  //   console.log(printTree(tree));
-  //   console.log(todayContents, lastWeekContents, beforeContents);
+  // console.log(promptText);
+  // console.log(printTree(tree));
+  // console.log(todayContents, lastWeekContents, beforeContents);
 
   let state: "thinking" | "text" | null = null;
+
+  const maxTokens = 128000;
 
   const message = await anthropic.messages
     .stream(
       {
         system:
           "You are software architect, respond to the users request in a single interaction (don't ask follow up questions). You have a complete file tree, and the contents of relevant files (other files exist as per the file tree) to aid you in your response.",
-        max_tokens: 128000,
+        max_tokens: maxTokens,
         thinking: {
           type: "enabled",
-          budget_tokens: 32000,
+          budget_tokens: maxTokens - 1024,
         },
         messages: [
           {
@@ -253,8 +264,8 @@ async function main() {
 
   const usage = calculateTokenUsageAndCost(message.usage);
 
-  const outputText = `
--------------------------------
+  const outputText = `\n\n
+---------------------------
 Tokens: ↑ ${(usage.inputTokens / 1000).toFixed(2)}k ↓ ${(
     usage.outputTokens / 1000
   ).toFixed(2)}k
@@ -263,7 +274,7 @@ Cache: ⊕ +${(usage.cacheCreationTokens / 1000).toFixed(2)}k → ${(
   ).toFixed(2)}k
 Context: ${(usage.totalInputTokens / 1000).toFixed(1)}k of 200.0k
 Cost: $${usage.totalCost.toFixed(4)}
--------------------------------
+---------------------------
 
 `;
 
