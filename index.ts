@@ -178,9 +178,11 @@ async function main() {
 
   const tree = createTree(allFiles);
 
-  console.log(printTree(tree));
-
   const filesWithContent = await getFilesWithContent(patterns);
+
+  const selectedFiles = printTree(
+    createTree(filesWithContent.map((file) => file.path))
+  );
 
   const { today, lastWeek, before } = await splitFilesByDate(filesWithContent);
 
@@ -196,6 +198,8 @@ async function main() {
   }
 
   const promptText = await Bun.file(promptFilePath).text();
+
+  await Bun.write(Bun.stdout, `Selected files:\n\n${selectedFiles}\n\n`);
 
   // console.log(promptText);
   // console.log(printTree(tree));
