@@ -1,12 +1,12 @@
 {
-  "name": "codeplan",
+  "name": "repoquery",
   "module": "index.ts",
   "type": "module",
   "private": false,
   "version": "0.1.0",
   "license": "MIT",
   "bin": {
-    "codeplan": "./index.ts"
+    "repoquery": "./index.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
