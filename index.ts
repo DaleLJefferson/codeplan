@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import Anthropic from "@anthropic-ai/sdk";
 import { parseArgs } from "util";
 import { existsSync } from "fs";
