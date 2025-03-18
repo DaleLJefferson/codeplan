@@ -2,7 +2,9 @@
   "name": "codeplan",
   "module": "index.ts",
   "type": "module",
-  "private": true,
+  "private": false,
+  "version": "0.1.0",
+  "license": "MIT",
   "bin": {
     "codeplan": "./index.ts"
   },
