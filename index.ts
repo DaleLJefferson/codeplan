@@ -7,10 +7,38 @@ import { promises as fs } from "fs";
 import { globby } from "globby";
 import matter from "gray-matter";
 import { countTokens as originalCountTokens } from "@anthropic-ai/tokenizer";
+import { parseArgs } from "util";
 
+const DEBUG = false;
 const PROMPT_FILE = "prompt.md";
 const RESPONSE_FILE = "response.md";
-const DEBUG = false;
+
+// Parse command line arguments
+const { values } = parseArgs({
+  args: Bun.argv,
+  options: {
+    think: {
+      type: "boolean",
+    },
+    help: {
+      type: "boolean",
+    },
+  },
+  strict: false,
+});
+
+// Show help if requested
+if (values.help) {
+  console.log("Usage: codeplan [options]");
+  console.log("");
+  console.log("Options:");
+  console.log("  --think     Show Claude's thinking process");
+  console.log("  --help      Show this help message");
+  process.exit(0);
+}
+
+// Default to not showing thinking output
+const think = values.think || false;
 
 // Pricing constants per million tokens
 const INPUT_PRICE_PER_M = 3.0;
@@ -245,7 +273,8 @@ async function main() {
     content: prompt,
   } = matter(promptFile);
 
-  await Bun.write(Bun.stdout, `\nInclude: ${include.join(", ")}\n`);
+  await Bun.write(Bun.stdout, `\nThinking: ${think ? "on" : "off"}\n`);
+  await Bun.write(Bun.stdout, `Include: ${include.join(", ")}\n`);
   await Bun.write(Bun.stdout, `Ignore: ${ignore.join(", ")}\n\n`);
 
   // We want to include all files in the file tree
@@ -332,30 +361,40 @@ async function main() {
       {
         system: systemPrompt,
         max_tokens: 128_000,
-        thinking: {
-          type: "enabled",
-          budget_tokens: 32_000,
-        },
+        thinking: think
+          ? {
+              type: "enabled",
+              budget_tokens: 32_000,
+            }
+          : undefined,
         messages: [
           {
             role: "user",
             content: [
               {
                 type: "text",
-                text: promptText,
+                text: beforeText,
+                cache_control: { type: "ephemeral" },
+              },
+              {
+                type: "text",
+                text: lastWeekText,
+                cache_control: { type: "ephemeral" },
+              },
+              {
+                type: "text",
+                text: todayText,
+                cache_control: { type: "ephemeral" },
               },
               {
                 type: "text",
                 text: fileTreeText,
-                cache_control: { type: "ephemeral" as const },
+                cache_control: { type: "ephemeral" },
               },
-              ...[todayText, lastWeekText, beforeText]
-                .filter(Boolean)
-                .map((content: string) => ({
-                  type: "text" as const,
-                  text: content,
-                  cache_control: { type: "ephemeral" as const },
-                })),
+              {
+                type: "text",
+                text: promptText,
+              },
             ],
           },
         ],
@@ -378,6 +417,8 @@ async function main() {
     .on("text", async (textDelta) => {
       if (state === "thinking") {
         await Bun.write(Bun.stdout, "\n\n</THINKING>\n\n");
+        state = "text";
+      } else if (!state) {
         state = "text";
       }
 
