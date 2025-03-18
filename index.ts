@@ -6,6 +6,24 @@ import type { Usage } from "@anthropic-ai/sdk/resources/index.mjs";
 import { promises as fs } from "fs";
 import { globby } from "globby";
 import matter from "gray-matter";
+import { countTokens as originalCountTokens } from "@anthropic-ai/tokenizer";
+
+const PROMPT_FILE = "prompt.md";
+const RESPONSE_FILE = "response.md";
+const DEBUG = false;
+
+// Pricing constants per million tokens
+const INPUT_PRICE_PER_M = 3.0;
+const CACHE_WRITE_PRICE_PER_M = 3.75;
+const CACHE_READ_PRICE_PER_M = 0.3;
+const OUTPUT_PRICE_PER_M = 15.0;
+
+// Create a wrapped version that adds padding to account for discrepancies
+function countTokens(text: string): number {
+  const tokenCount = originalCountTokens(text);
+  // Add padding based on observed discrepancy
+  return Math.ceil(tokenCount * 1.15);
+}
 
 const systemPrompt = `You are software architect, respond to the users request in a single interaction (don't ask follow up questions). 
 You have a complete file tree, and the contents of relevant files (other files exist as per the file tree) to aid you in your response.
@@ -19,15 +37,13 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Pricing constants per million tokens
-const INPUT_PRICE_PER_M = 3.0;
-const CACHE_WRITE_PRICE_PER_M = 3.75;
-const CACHE_READ_PRICE_PER_M = 0.3;
-const OUTPUT_PRICE_PER_M = 15.0;
-
 type Tree = {
   [key: string]: Tree;
 };
+
+function formatFilesContent(path: string, content: string): string {
+  return `<file path="${path}">\n${content}\n</file>`;
+}
 
 function createTree(paths: string[]): Tree {
   const tree: Tree = {};
@@ -59,13 +75,47 @@ function printTree(tree: Tree, indent: string = ""): string {
   return result;
 }
 
+function printTreeWithTokens(
+  tree: Tree,
+  filesWithTokens: Map<string, number>,
+  path: string = "",
+  indent: string = ""
+): string {
+  if (Object.keys(tree).length === 0) {
+    return "";
+  }
+  let result = "";
+  Object.keys(tree)
+    // Sort by descending token count
+    .sort((a, b) => {
+      const fullPathA = path ? `${path}/${a}` : a;
+      const fullPathB = path ? `${path}/${b}` : b;
+      const tokensA = filesWithTokens.get(fullPathA) || 0;
+      const tokensB = filesWithTokens.get(fullPathB) || 0;
+      return tokensB - tokensA;
+    })
+    .forEach((key) => {
+      const fullPath = path ? `${path}/${key}` : key;
+      const tokens = filesWithTokens.get(fullPath);
+      const tokenDisplay = tokens ? ` (${(tokens / 1000).toFixed(2)}k)` : "";
+      result += `${indent}- ${key}${tokenDisplay}\n`;
+      result += printTreeWithTokens(
+        tree[key] ?? {},
+        filesWithTokens,
+        fullPath,
+        indent + " "
+      );
+    });
+  return result;
+}
+
 async function getFilesPaths(
   include: Array<string>,
   ignore: Array<string> = []
 ): Promise<Array<string>> {
   return await globby(include, {
     gitignore: true,
-    ignoreFiles: ignore,
+    ignore,
   }).then((files) => files.sort());
 }
 
@@ -73,6 +123,7 @@ type FileData = {
   path: string;
   lastModified: number;
   content: string;
+  tokens: number;
 };
 
 async function getFilesWithContent(
@@ -84,14 +135,18 @@ async function getFilesWithContent(
   const fileData = await Promise.all(
     files.map(async (path: string) => {
       const file = Bun.file(path);
-      const [content, lastModified] = await Promise.all([
-        file.text(),
+      const [{ content, tokens }, lastModified] = await Promise.all([
+        file
+          .text()
+          .then((content) => formatFilesContent(path, content))
+          .then((content) => ({ content, tokens: countTokens(content) })),
         file.lastModified,
       ]);
       return {
         path,
         lastModified,
         content,
+        tokens,
       };
     })
   );
@@ -155,29 +210,39 @@ function calculateTokenUsageAndCost({
   };
 }
 
-function formatFilesContent(files: FileData[]): string {
-  return files
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join("\n");
-}
-
 async function main() {
   // Delete plan.md if it exists
-  if (existsSync("plan.md")) {
-    await fs.unlink("plan.md");
+  if (existsSync(RESPONSE_FILE)) {
+    await fs.unlink(RESPONSE_FILE);
   }
 
-  const promptFilePath = "prompt.md";
+  function printLargestFiles(
+    files: Array<FileData>,
+    count: number = 5
+  ): string {
+    const sortedFiles = [...files].sort((a, b) => b.tokens - a.tokens);
+    const top = sortedFiles.slice(0, count);
 
-  if (!existsSync(promptFilePath)) {
-    console.log(`No ${promptFilePath} file found`);
-    return;
+    let result = `\nTop ${count} largest files by token count:\n\n`;
+    top.forEach((file, index) => {
+      result += `${index + 1}. ${file.path}: ${(file.tokens / 1000).toFixed(
+        2
+      )}k tokens\n`;
+    });
+
+    return result;
   }
 
-  const promptFile = await Bun.file(promptFilePath).text();
+  if (!existsSync(PROMPT_FILE)) {
+    console.log(`No ${PROMPT_FILE} file found`);
+
+    process.exit(1);
+  }
+
+  const promptFile = await Bun.file(PROMPT_FILE).text();
   const {
     data: { include = [], ignore = [] },
-    content: promptText,
+    content: prompt,
   } = matter(promptFile);
 
   await Bun.write(Bun.stdout, `\nInclude: ${include.join(", ")}\n`);
@@ -190,17 +255,57 @@ async function main() {
 
   const filesWithContent = await getFilesWithContent(include, ignore);
 
-  const selectedFiles = printTree(
-    createTree(filesWithContent.map((file) => file.path))
+  // Create a map of file paths to token counts
+  const tokenMap = new Map<string, number>();
+  filesWithContent.forEach((file) => {
+    tokenMap.set(file.path, file.tokens);
+  });
+
+  const selectedFiles = printTreeWithTokens(
+    createTree(filesWithContent.map((file) => file.path)),
+    tokenMap
   );
 
   const { today, lastWeek, before } = await splitFilesByDate(filesWithContent);
 
-  const todayContents = formatFilesContent(today);
-  const lastWeekContents = formatFilesContent(lastWeek);
-  const beforeContents = formatFilesContent(before);
+  await Bun.write(Bun.stdout, `Selected files:\n\n${selectedFiles}`);
 
-  await Bun.write(Bun.stdout, `Selected files:\n\n${selectedFiles}\n\n`);
+  // Output the largest 5 files
+  await Bun.write(Bun.stdout, `${printLargestFiles(filesWithContent)}\n`);
+
+  // Calculate total tokens from all files
+  const totalTokens = filesWithContent.reduce(
+    (sum, { tokens }) => sum + tokens,
+    0
+  );
+
+  const promptText = `<user_prompt>${prompt}</user_prompt>`;
+  const fileTreeText = `<file_tree>\n${printTree(tree)}\n</file_tree>`;
+  const todayText = today.map(({ content }) => content).join("\n");
+  const lastWeekText = lastWeek.map(({ content }) => content).join("\n");
+  const beforeText = before.map(({ content }) => content).join("\n");
+
+  // Calculate tokens in the tree representation
+  const treeTokens = countTokens(fileTreeText);
+  const promptTokens = countTokens(promptText);
+
+  await Bun.write(
+    Bun.stdout,
+    `File content tokens: ${(totalTokens / 1000).toFixed(2)}k\n` +
+      `Tree tokens: ${(treeTokens / 1000).toFixed(2)}k\n` +
+      `Total tokens: ${(
+        (totalTokens + treeTokens + promptTokens) /
+        1000
+      ).toFixed(2)}k of 200.0k\n\n`
+  );
+
+  if (DEBUG) {
+    await Bun.write(Bun.stdout, `${promptText}\n`);
+    await Bun.write(Bun.stdout, `${fileTreeText}\n`);
+    await Bun.write(Bun.stdout, `${todayText}\n`);
+    await Bun.write(Bun.stdout, `${lastWeekText}\n`);
+    await Bun.write(Bun.stdout, `${beforeText}\n`);
+  }
 
   // Ask for user confirmation before proceeding
   await Bun.write(Bun.stdout, "Continue? (y/n): ");
@@ -241,10 +346,10 @@ async function main() {
               },
               {
                 type: "text",
-                text: `<file_tree>\n${printTree(tree)}\n</file_tree>`,
+                text: fileTreeText,
                 cache_control: { type: "ephemeral" as const },
               },
-              ...[todayContents, lastWeekContents, beforeContents]
+              ...[todayText, lastWeekText, beforeText]
                 .filter(Boolean)
                 .map((content: string) => ({
                   type: "text" as const,
@@ -293,7 +398,7 @@ Cache: ⊕ +${(usage.cacheCreationTokens / 1000).toFixed(2)}k → ${(
 Context: ${(usage.totalInputTokens / 1000).toFixed(1)}k of 200.0k
 Cost: $${usage.totalCost.toFixed(4)}
 ---------------------------
-
+\n
 `;
 
   await Bun.write(Bun.stdout, outputText);
@@ -304,9 +409,9 @@ Cost: $${usage.totalCost.toFixed(4)}
     .map((block) => block.text)
     .join("\n\n");
 
-  await Bun.write("plan.md", contentText);
+  await Bun.write("response.md", contentText);
 
-  console.log("Plan written to plan.md");
+  console.log("Result written to response.md");
 }
 
 main().catch((error) => {
