@@ -156,9 +156,7 @@ async function getFilesWithContent(
   include: Array<string>,
   ignore: Array<string>
 ): Promise<Array<FileData>> {
-  console.log("Getting file paths");
   const files = await getFilesPaths(include, ignore);
-  console.log("Getting file content");
 
   const fileData = await Promise.all(
     files.map(async (path: string) => {
