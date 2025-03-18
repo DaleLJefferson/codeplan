@@ -364,13 +364,14 @@ Tell me about the codebase
   // Calculate tokens in the tree representation
   const treeTokens = countTokens(fileTreeText);
   const promptTokens = countTokens(promptText);
+  const systemTokens = countTokens(systemPrompt);
 
   await Bun.write(
     Bun.stdout,
     `File content tokens: ${(totalTokens / 1000).toFixed(2)}k\n` +
       `Tree tokens: ${(treeTokens / 1000).toFixed(2)}k\n` +
       `Total tokens: ${(
-        (totalTokens + treeTokens + promptTokens) /
+        (systemTokens + totalTokens + treeTokens + promptTokens) /
         1000
       ).toFixed(2)}k of 200.0k\n\n`
   );
@@ -408,6 +409,7 @@ Tell me about the codebase
       {
         system: systemPrompt,
         max_tokens: 128_000,
+        temperature: 0,
         thinking: think
           ? {
               type: "enabled",
