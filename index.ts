@@ -6,8 +6,9 @@ import type { Usage } from "@anthropic-ai/sdk/resources/index.mjs";
 import { promises as fs } from "fs";
 import { globby } from "globby";
 import matter from "gray-matter";
-import { countTokens as originalCountTokens } from "@anthropic-ai/tokenizer";
 import { parseArgs } from "util";
+import { get_encoding } from "tiktoken";
+import { performance } from "node:perf_hooks";
 
 const DEBUG = false;
 const PROMPT_FILE = "prompt.md";
@@ -46,11 +47,11 @@ const CACHE_WRITE_PRICE_PER_M = 3.75;
 const CACHE_READ_PRICE_PER_M = 0.3;
 const OUTPUT_PRICE_PER_M = 15.0;
 
+const encoding = get_encoding("cl100k_base");
+
 // Create a wrapped version that adds padding to account for discrepancies
 function countTokens(text: string): number {
-  const tokenCount = originalCountTokens(text);
-  // Add padding based on observed discrepancy
-  return Math.ceil(tokenCount * 1.15);
+  return encoding.encode(text).length * 1.3;
 }
 
 const systemPrompt = `You are software architect, respond to the users request in a single interaction (don't ask follow up questions). 
@@ -93,8 +94,8 @@ function printTree(tree: Tree, indent: string = ""): string {
   Object.keys(tree)
     .sort()
     .forEach((key) => {
-      result += `${indent}- ${key}\n`;
-      result += printTree(tree[key] ?? {}, indent + " ");
+      result += `${indent}${key}\n`;
+      result += printTree(tree[key] ?? {}, indent + "  ");
     });
   return result;
 }
@@ -122,12 +123,12 @@ function printTreeWithTokens(
       const fullPath = path ? `${path}/${key}` : key;
       const tokens = filesWithTokens.get(fullPath);
       const tokenDisplay = tokens ? ` (${(tokens / 1000).toFixed(2)}k)` : "";
-      result += `${indent}- ${key}${tokenDisplay}\n`;
+      result += `${indent}${key}${tokenDisplay}\n`;
       result += printTreeWithTokens(
         tree[key] ?? {},
         filesWithTokens,
         fullPath,
-        indent + " "
+        indent + "  "
       );
     });
   return result;
@@ -140,6 +141,7 @@ async function getFilesPaths(
   return await globby(include, {
     gitignore: true,
     ignore,
+    followSymbolicLinks: false,
   }).then((files) => files.sort());
 }
 
@@ -154,7 +156,9 @@ async function getFilesWithContent(
   include: Array<string>,
   ignore: Array<string>
 ): Promise<Array<FileData>> {
+  console.log("Getting file paths");
   const files = await getFilesPaths(include, ignore);
+  console.log("Getting file content");
 
   const fileData = await Promise.all(
     files.map(async (path: string) => {
@@ -249,6 +253,8 @@ function printLargestFiles(files: Array<FileData>, count: number = 5): string {
 }
 
 async function main() {
+  performance.mark("start");
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
   // Check if ANTHROPIC_API_KEY is set
@@ -325,11 +331,10 @@ Tell me about the codebase
   await Bun.write(Bun.stdout, `Ignore: ${ignore.join(", ")}\n\n`);
 
   // We want to include all files in the file tree
-  const allFiles = await getFilesPaths(["**"]);
-
-  const tree = createTree(allFiles);
-
-  const filesWithContent = await getFilesWithContent(include, ignore);
+  const [tree, filesWithContent] = await Promise.all([
+    getFilesPaths(["**"]).then(createTree),
+    getFilesWithContent(include, ignore),
+  ]);
 
   // Create a map of file paths to token counts
   const tokenMap = new Map<string, number>();
@@ -349,31 +354,55 @@ Tell me about the codebase
   // Output the largest 5 files
   await Bun.write(Bun.stdout, `${printLargestFiles(filesWithContent)}\n`);
 
-  // Calculate total tokens from all files
-  const totalTokens = filesWithContent.reduce(
-    (sum, { tokens }) => sum + tokens,
-    0
-  );
-
   const promptText = `<user_prompt>${prompt}</user_prompt>`;
   const fileTreeText = `<file_tree>\n${printTree(tree)}\n</file_tree>`;
   const todayText = today.map(({ content }) => content).join("\n");
   const lastWeekText = lastWeek.map(({ content }) => content).join("\n");
   const beforeText = before.map(({ content }) => content).join("\n");
 
-  // Calculate tokens in the tree representation
-  const treeTokens = countTokens(fileTreeText);
-  const promptTokens = countTokens(promptText);
-  const systemTokens = countTokens(systemPrompt);
+  const messages = [
+    {
+      role: "user" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: beforeText,
+          cache_control: { type: "ephemeral" as const },
+        },
+        {
+          type: "text" as const,
+          text: lastWeekText,
+          cache_control: { type: "ephemeral" as const },
+        },
+        {
+          type: "text" as const,
+          text: todayText,
+          cache_control: { type: "ephemeral" as const },
+        },
+        {
+          type: "text" as const,
+          text: fileTreeText,
+          cache_control: { type: "ephemeral" as const },
+        },
+        {
+          type: "text" as const,
+          text: promptText,
+        },
+      ].filter((block) => block.text.length > 0),
+    },
+  ];
+
+  const totalTokens = await anthropic.messages
+    .countTokens({
+      system: systemPrompt,
+      messages,
+      model: "claude-3-7-sonnet-20250219",
+    })
+    .then(({ input_tokens }) => input_tokens);
 
   await Bun.write(
     Bun.stdout,
-    `File content tokens: ${(totalTokens / 1000).toFixed(2)}k\n` +
-      `Tree tokens: ${(treeTokens / 1000).toFixed(2)}k\n` +
-      `Total tokens: ${(
-        (systemTokens + totalTokens + treeTokens + promptTokens) /
-        1000
-      ).toFixed(2)}k of 200.0k\n\n`
+    `Tokens: ${(totalTokens / 1000).toFixed(2)}k of 200.0k\n\n`
   );
 
   if (DEBUG) {
@@ -416,37 +445,7 @@ Tell me about the codebase
               budget_tokens: 32_000,
             }
           : undefined,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text" as const,
-                text: beforeText,
-                cache_control: { type: "ephemeral" as const },
-              },
-              {
-                type: "text" as const,
-                text: lastWeekText,
-                cache_control: { type: "ephemeral" as const },
-              },
-              {
-                type: "text" as const,
-                text: todayText,
-                cache_control: { type: "ephemeral" as const },
-              },
-              {
-                type: "text" as const,
-                text: fileTreeText,
-                cache_control: { type: "ephemeral" as const },
-              },
-              {
-                type: "text" as const,
-                text: promptText,
-              },
-            ].filter((block) => block.text.length > 0),
-          },
-        ],
+        messages,
         model: "claude-3-7-sonnet-20250219",
       },
       {
