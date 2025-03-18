@@ -1,6 +1,11 @@
 # RepoQuery
 
-A tool to query your codebase using Anthropic's Claude with full file tree context and specified files.
+A tool to query your codebase using Anthropic's Claude with full file tree context and your whole repository as context.
+
+**Use the whole 200k token context window and full power of Claude 3.7 Extended Thinking.**
+
+- Ask questions about the codebase
+- Create a detailed implementation plan to hand to Cursor/Windsurf or another AI code editor
 
 ![Overview](https://github.com/DaleLJefferson/repoquery/blob/main/img/overview.png)
 
@@ -32,16 +37,16 @@ bun install -g repoquery
 ```markdown
 ---
 include:
-  - "src/**/*.ts" # Include TypeScript files in src
-  - "package.json" # Include package.json
+  - "src/**/*.ts"
+  - "package.json"
 ignore:
-  - "src/tests/**" # Ignore test files
+  - "src/tests/**"
 ---
 
 Tell me about the codebase
 ```
 
-2. Run in your project directory:
+2. Run repoquery in your project directory:
 
 ```bash
 repoquery

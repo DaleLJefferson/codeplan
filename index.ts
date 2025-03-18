@@ -234,6 +234,20 @@ function calculateTokenUsageAndCost({
   };
 }
 
+function printLargestFiles(files: Array<FileData>, count: number = 5): string {
+  const sortedFiles = [...files].sort((a, b) => b.tokens - a.tokens);
+  const top = sortedFiles.slice(0, count);
+
+  let result = `\nTop ${count} largest files by token count:\n\n`;
+  top.forEach((file, index) => {
+    result += `${index + 1}. ${file.path}: ${(file.tokens / 1000).toFixed(
+      2
+    )}k tokens\n`;
+  });
+
+  return result;
+}
+
 async function main() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
@@ -261,26 +275,22 @@ async function main() {
     await fs.unlink(RESPONSE_FILE);
   }
 
-  function printLargestFiles(
-    files: Array<FileData>,
-    count: number = 5
-  ): string {
-    const sortedFiles = [...files].sort((a, b) => b.tokens - a.tokens);
-    const top = sortedFiles.slice(0, count);
-
-    let result = `\nTop ${count} largest files by token count:\n\n`;
-    top.forEach((file, index) => {
-      result += `${index + 1}. ${file.path}: ${(file.tokens / 1000).toFixed(
-        2
-      )}k tokens\n`;
-    });
-
-    return result;
-  }
-
   if (!existsSync(PROMPT_FILE)) {
-    console.log(`No ${PROMPT_FILE} file found`);
+    console.error(`\x1b[31mError: No ${PROMPT_FILE} file found\x1b[0m`);
+    console.error(
+      `Please create a ${PROMPT_FILE} file with your query and any file include/ignore patterns.`
+    );
+    console.error(`Example:
+---
+include:
+  - "src/**/*.ts"
+  - "package.json"
+ignore:
+  - "src/tests/**"
+---
 
+Tell me about the codebase
+`);
     process.exit(1);
   }
 
@@ -289,6 +299,26 @@ async function main() {
     data: { include = [], ignore = [] },
     content: prompt,
   } = matter(promptFile);
+
+  // Check if include patterns are provided
+  if (include.length === 0) {
+    console.error("\x1b[31mError: No files have been included\x1b[0m");
+    console.error(
+      "Please specify files to include in your prompt.md file using the frontmatter format:"
+    );
+    console.error(`
+---
+include:
+  - "src/**/*.ts"
+  - "package.json"
+ignore:
+  - "src/tests/**"
+---
+
+Tell me about the codebase
+`);
+    process.exit(1);
+  }
 
   await Bun.write(Bun.stdout, `\nThinking: ${think ? "on" : "off"}\n`);
   await Bun.write(Bun.stdout, `Include: ${include.join(", ")}\n`);
