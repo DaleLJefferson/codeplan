@@ -30,9 +30,8 @@ type Tree = {
 };
 
 function createTree(paths: string[]): Tree {
-  console.log(paths);
-
   const tree: Tree = {};
+
   paths.forEach((path) => {
     const parts = path.split("/").filter((part) => part !== "");
     let current = tree;
@@ -42,6 +41,7 @@ function createTree(paths: string[]): Tree {
       current = current[part];
     });
   });
+
   return tree;
 }
 
@@ -59,9 +59,13 @@ function printTree(tree: Tree, indent: string = ""): string {
   return result;
 }
 
-async function getFilesPaths(patterns: Array<string>): Promise<Array<string>> {
-  return await globby(patterns, {
+async function getFilesPaths(
+  include: Array<string>,
+  ignore: Array<string> = []
+): Promise<Array<string>> {
+  return await globby(include, {
     gitignore: true,
+    ignoreFiles: ignore,
   }).then((files) => files.sort());
 }
 
@@ -72,9 +76,10 @@ type FileData = {
 };
 
 async function getFilesWithContent(
-  patterns: Array<string>
+  include: Array<string>,
+  ignore: Array<string>
 ): Promise<Array<FileData>> {
-  const files = await getFilesPaths(patterns);
+  const files = await getFilesPaths(include, ignore);
 
   const fileData = await Promise.all(
     files.map(async (path: string) => {
@@ -170,21 +175,20 @@ async function main() {
   }
 
   const promptFile = await Bun.file(promptFilePath).text();
-  const { data, content: promptText } = matter(promptFile);
+  const {
+    data: { include = [], ignore = [] },
+    content: promptText,
+  } = matter(promptFile);
 
-  const filePatterns = data.files || [];
-
-  // Always include cursor rules
-  const patterns = [...filePatterns, ".cursor/rules/**"];
-
-  await Bun.write(Bun.stdout, `Files to include: ${patterns.join(", ")}\n\n`);
+  await Bun.write(Bun.stdout, `\nInclude: ${include.join(", ")}\n`);
+  await Bun.write(Bun.stdout, `Ignore: ${ignore.join(", ")}\n\n`);
 
   // We want to include all files in the file tree
   const allFiles = await getFilesPaths(["**"]);
 
   const tree = createTree(allFiles);
 
-  const filesWithContent = await getFilesWithContent(patterns);
+  const filesWithContent = await getFilesWithContent(include, ignore);
 
   const selectedFiles = printTree(
     createTree(filesWithContent.map((file) => file.path))
