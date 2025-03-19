@@ -2,13 +2,18 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { existsSync } from "fs";
-import type { Usage } from "@anthropic-ai/sdk/resources/index.mjs";
+import type {
+  MessageParam,
+  TextBlockParam,
+  Usage,
+} from "@anthropic-ai/sdk/resources/index.mjs";
 import { promises as fs } from "fs";
 import { globby } from "globby";
 import matter from "gray-matter";
 import { parseArgs } from "util";
 import { get_encoding } from "tiktoken";
 import { performance } from "node:perf_hooks";
+import util from "util";
 
 const DEBUG = false;
 const PROMPT_FILE = "prompt.md";
@@ -180,28 +185,6 @@ async function getFilesWithContent(
   return fileData;
 }
 
-function splitFilesByDate(files: Array<FileData>): {
-  today: Array<FileData>;
-  lastWeek: Array<FileData>;
-  before: Array<FileData>;
-} {
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-
-  const today = files.filter(
-    (file: { lastModified: number }) => now - file.lastModified < dayMs
-  );
-  const lastWeek = files.filter(
-    (file: { lastModified: number }) =>
-      now - file.lastModified >= dayMs && now - file.lastModified < 7 * dayMs
-  );
-  const before = files.filter(
-    (file: { lastModified: number }) => now - file.lastModified >= 7 * dayMs
-  );
-
-  return { today, lastWeek, before };
-}
-
 function calculateTokenUsageAndCost({
   input_tokens,
   cache_creation_input_tokens,
@@ -327,72 +310,94 @@ Tell me about the codebase
   await Bun.write(Bun.stdout, `\nThinking: ${think ? "on" : "off"}\n`);
   await Bun.write(Bun.stdout, `Include: ${include.join(", ")}\n`);
   await Bun.write(Bun.stdout, `Ignore: ${ignore.join(", ")}\n\n`);
+  await Bun.write(Bun.stdout, `Reading Files...\n\n`);
 
   // We want to include all files in the file tree
-  const [tree, filesWithContent] = await Promise.all([
+  const [tree, filesWithContent, rulesWithContent] = await Promise.all([
     getFilesPaths(["**"]).then(createTree),
     getFilesWithContent(include, ignore),
+    getFilesWithContent([".cursor/rules/**/*.mdc"], []),
   ]);
 
   // Create a map of file paths to token counts
-  const tokenMap = new Map<string, number>();
+  const filesTokenMap = new Map<string, number>();
+
   filesWithContent.forEach((file) => {
-    tokenMap.set(file.path, file.tokens);
+    filesTokenMap.set(file.path, file.tokens);
   });
 
   const selectedFiles = printTreeWithTokens(
     createTree(filesWithContent.map((file) => file.path)),
-    tokenMap
+    filesTokenMap
   );
 
-  const { today, lastWeek, before } = await splitFilesByDate(filesWithContent);
+  const rulesTokenMap = new Map<string, number>();
 
-  await Bun.write(Bun.stdout, `Selected files:\n\n${selectedFiles}`);
+  rulesWithContent.forEach((file) => {
+    rulesTokenMap.set(file.path, file.tokens);
+  });
+
+  const selectedRules = printTreeWithTokens(
+    createTree(rulesWithContent.map((file) => file.path)),
+    rulesTokenMap
+  );
+
+  await Bun.write(Bun.stdout, `Rules:\n\n${selectedRules}\n`);
+  await Bun.write(Bun.stdout, `Files:\n\n${selectedFiles}\n`);
 
   // Output the largest 5 files
-  await Bun.write(Bun.stdout, `${printLargestFiles(filesWithContent)}\n`);
+  await Bun.write(
+    Bun.stdout,
+    `${printLargestFiles([...filesWithContent, ...rulesWithContent])}\n`
+  );
 
-  const promptText = `<user_prompt>${prompt}</user_prompt>`;
+  const rulesText = `<rules>${rulesWithContent
+    .map(({ content }) => content)
+    .join("\n")}\n}</rules>`;
   const fileTreeText = `<file_tree>\n${printTree(tree)}\n</file_tree>`;
-  const todayText = today.map(({ content }) => content).join("\n");
-  const lastWeekText = lastWeek.map(({ content }) => content).join("\n");
-  const beforeText = before.map(({ content }) => content).join("\n");
+  const filesText = `<files>\n${filesWithContent
+    .map(({ content }) => content)
+    .join("\n")}\n</files>`;
+  const promptText = `<user_prompt>${prompt}</user_prompt>`;
 
-  const messages = [
+  const system: Array<TextBlockParam> = [
     {
-      role: "user" as const,
+      type: "text",
+      text: systemPrompt,
+      cache_control: { type: "ephemeral" },
+    },
+  ];
+
+  const messages: Array<MessageParam> = [
+    {
+      role: "user",
       content: [
         {
-          type: "text" as const,
-          text: beforeText,
-          cache_control: { type: "ephemeral" as const },
+          type: "text",
+          text: rulesText,
+          cache_control: { type: "ephemeral" },
         },
         {
-          type: "text" as const,
-          text: lastWeekText,
-          cache_control: { type: "ephemeral" as const },
-        },
-        {
-          type: "text" as const,
-          text: todayText,
-          cache_control: { type: "ephemeral" as const },
-        },
-        {
-          type: "text" as const,
+          type: "text",
           text: fileTreeText,
-          cache_control: { type: "ephemeral" as const },
+          cache_control: { type: "ephemeral" },
         },
         {
-          type: "text" as const,
+          type: "text",
+          text: filesText,
+          cache_control: { type: "ephemeral" },
+        },
+        {
+          type: "text",
           text: promptText,
         },
-      ].filter((block) => block.text.length > 0),
+      ],
     },
   ];
 
   const totalTokens = await anthropic.messages
     .countTokens({
-      system: systemPrompt,
+      system,
       messages,
       model: "claude-3-7-sonnet-20250219",
     })
@@ -404,11 +409,12 @@ Tell me about the codebase
   );
 
   if (DEBUG) {
-    await Bun.write(Bun.stdout, `${promptText}\n`);
-    await Bun.write(Bun.stdout, `${fileTreeText}\n`);
-    await Bun.write(Bun.stdout, `${todayText}\n`);
-    await Bun.write(Bun.stdout, `${lastWeekText}\n`);
-    await Bun.write(Bun.stdout, `${beforeText}\n`);
+    console.log(
+      util.inspect(system, { showHidden: false, depth: null, colors: true })
+    );
+    console.log(
+      util.inspect(messages, { showHidden: false, depth: null, colors: true })
+    );
   }
 
   // Ask for user confirmation before proceeding
@@ -434,7 +440,7 @@ Tell me about the codebase
   const message = await anthropic.messages
     .stream(
       {
-        system: systemPrompt,
+        system,
         max_tokens: 128_000,
         temperature: 0,
         thinking: think
