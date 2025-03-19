@@ -236,10 +236,8 @@ function printLargestFiles(files: Array<FileData>, count: number = 5): string {
 async function main() {
   performance.mark("start");
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-
-  // Check if ANTHROPIC_API_KEY is set
-  if (!apiKey) {
+  // Check if ANTHROPIC_API_KEY is set Anthropic() automatically reads it
+  if (!process.env.ANTHROPIC_API_KEY) {
     console.error("\x1b[31mError: ANTHROPIC_API_KEY is not set\x1b[0m");
     console.error(
       "Please set your Anthropic API key in one of the following ways:"
@@ -253,9 +251,7 @@ async function main() {
     process.exit(1);
   }
 
-  const anthropic = new Anthropic({
-    apiKey,
-  });
+  const anthropic = new Anthropic();
 
   // Delete plan.md if it exists
   if (existsSync(RESPONSE_FILE)) {
