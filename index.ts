@@ -16,7 +16,7 @@ import { performance } from "node:perf_hooks";
 import util from "util";
 
 const DEBUG = false;
-const PROMPT_FILE = "prompt.md";
+const PROMPT_FILES = ["query.md", "prompt.md"];
 const RESPONSE_FILE = "response.md";
 
 // Parse command line arguments
@@ -29,6 +29,9 @@ const { values } = parseArgs({
     help: {
       type: "boolean",
     },
+    out: {
+      type: "boolean",
+    },
   },
   strict: false,
 });
@@ -39,12 +42,14 @@ if (values.help) {
   console.log("");
   console.log("Options:");
   console.log("  --think     Show Claude's thinking process");
+  console.log("  --out       Write response to response.md file");
   console.log("  --help      Show this help message");
   process.exit(0);
 }
 
 // Default to not showing thinking output
 const think = values.think || false;
+const writeOutput = values.out || false;
 
 const THINK_BUDGET = 32_000;
 const MAX_TOKENS = 64_000;
@@ -302,14 +307,17 @@ async function main() {
   const anthropic = new Anthropic();
 
   // Delete plan.md if it exists
-  if (existsSync(RESPONSE_FILE)) {
+  if (existsSync(RESPONSE_FILE) && writeOutput) {
     await fs.unlink(RESPONSE_FILE);
   }
 
-  if (!existsSync(PROMPT_FILE)) {
-    console.error(`\x1b[31mError: No ${PROMPT_FILE} file found\x1b[0m`);
+  // Find the first existing prompt file
+  const existingPromptFile = PROMPT_FILES.find((file) => existsSync(file));
+
+  if (!existingPromptFile) {
+    console.error(`\x1b[31mError: No query file found\x1b[0m`);
     console.error(
-      `Please create a ${PROMPT_FILE} file with your query and any file include/ignore patterns.`
+      `Please create a query.md file with your query and any file include/ignore patterns.`
     );
     console.error(`Example:
 ---
@@ -325,7 +333,7 @@ Tell me about the codebase
     process.exit(1);
   }
 
-  const promptFile = await Bun.file(PROMPT_FILE).text();
+  const promptFile = await Bun.file(existingPromptFile).text();
   const {
     data: { include = [], ignore = [] },
     content: prompt,
@@ -540,15 +548,16 @@ Cost: $${usage.totalCost.toFixed(4)}
 
   await Bun.write(Bun.stdout, outputText);
 
-  // Write the message content to plan.md
+  // Write the message content to response.md if output flag is set
   const contentText = message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n\n");
 
-  await Bun.write("response.md", contentText);
-
-  console.log("Result written to response.md");
+  if (writeOutput) {
+    await Bun.write(RESPONSE_FILE, contentText);
+    console.log(`Result written to ${RESPONSE_FILE}`);
+  }
 }
 
 main().catch((error) => {

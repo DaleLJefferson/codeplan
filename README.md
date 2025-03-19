@@ -4,23 +4,21 @@ A tool to query your codebase using Anthropic's Claude with full file tree conte
 
 **Use the whole 200k token context window and full power of Claude 3.7 Extended Thinking.**
 
-- Ask questions about the codebase
+- Ask questions about the whole codebase
 - Create a detailed implementation plan to hand to Cursor/Windsurf or another AI code editor
 
 ![Overview](https://github.com/DaleLJefferson/repoquery/blob/main/img/overview.png)
 
-## Quick Start
+## Why?
 
-```bash
-# Add a .env file with your Anthropic API key or in your environment
-ANTHROPIC_API_KEY=your_api_key_here
+AI Code Editors are great, but to offer a $20 a month subscription they have to severely limit the context window. They load a few lines from a few files and that's it.
+The chat interface for ChatGPT, Claude, Grok are limited to ~20k tokens and start to summarise, truncate or refuse to answer.
 
-# Create a prompt.md file in your project
-echo "Tell me about the codebase" > prompt.md
+This tool (at a cost [API usage fees]) give you access to the full context window 200K without restrictions, to answer full codebase questions or generate complex plans spanning multiple files.
 
-# Run repoquery
-bunx repoquery
-```
+## Warning
+
+This tool is experimental, it will have bugs, ensure you update to the latest version and post an issue on [GitHub](https://github.com/DaleLJefferson/repoquery/issues).
 
 ## Installation
 
@@ -32,7 +30,7 @@ bun install -g repoquery
 
 ## Usage
 
-1. Create a `prompt.md` file in your project:
+1. Create a `query.md` file in your project:
 
 ```markdown
 ---
@@ -55,18 +53,18 @@ repoquery
 repoquery --think
 ```
 
-3. Your response will be in `response.md`
-
 ### Options
 
 - `--think`: Show Claude's thinking process
 - `--help`: Display help information
+- `--out`: Write response to response.md file
 
 ## Features
 
 - Full file tree context for better comprehension of your codebase
-- Select files to include using glob patterns
+- Include using glob patterns
 - Gitignore support works automatically (excluded files won't be included)
+- Cursor rules automatically added to prompt
 - Smart token caching
 
 ## Requirements
