@@ -46,6 +46,9 @@ if (values.help) {
 // Default to not showing thinking output
 const think = values.think || false;
 
+const THINK_BUDGET = 32_000;
+const MAX_TOKENS = 128_000;
+
 // Pricing constants per million tokens
 const INPUT_PRICE_PER_M = 3.0;
 const CACHE_WRITE_PRICE_PER_M = 3.75;
@@ -437,12 +440,12 @@ Tell me about the codebase
     .stream(
       {
         system,
-        max_tokens: 128_000,
-        temperature: 0,
+        max_tokens: think ? MAX_TOKENS - THINK_BUDGET : MAX_TOKENS,
+        temperature: think ? 1 : 0,
         thinking: think
           ? {
               type: "enabled",
-              budget_tokens: 32_000,
+              budget_tokens: THINK_BUDGET,
             }
           : undefined,
         messages,
