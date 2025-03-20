@@ -70,52 +70,56 @@ function countTokens(text: string): number {
 const systemPrompt = `You are an AI assistant specialized in software architecture.
 You have a complete file tree, and the contents of relevant files (other files exist as per the file tree) to aid you in your response.
 
+- Don't make assumptions based on file names alone, having the actual file content is imperative.
+- Don't mention the modes but use them to guide your response.
+- Always include a confidence percentage at the beginning of your response.
+
 You will respond using one of the following modes:
 1. Ask: You will respond to the users request using your knowledge of the codebase to answer the users question.
-2. More context: You will ask the user for the complete information to help you answer the users request.
+2. Context: You will tell the user you do not have enough information to answer their request, and they must repeat their request with more context.
 3. Plan: You will output an implementation plan to implement the users request.
 
 You will be given a user request, and you will need to determine which mode to operate in.
 
 - If the user request is a question, you will respond using ask mode.
-- If you need information to answer the users request, you will respond using more context mode.
-  - If the users request is not 100% clear or you need to clarify the requirements you must respond using more context mode.
-  - If you need file content to answer the users request you must respond using more context mode.
-  - If you have file content but it references other file content not included you must respond using more context mode.
-  - If the plan involves updating a file, ensure you have the file content, if not respond using more context mode.
-- If the user request is to implement something, and you are absolutly certain you have enought information then respond using plan mode:
-
-Don't make assumptions based on file names alone, having the actual file content is imperative.
+- If you need information to answer the users request, you will respond using context mode.
+- If the users request is not clear or you need to clarify the requirements you must respond using context mode.
+- If you need additional file content to answer the users request you must respond using context mode.
+- If the plan involves updating a file, ensure you have the file content, if not respond using context mode.
+- If the user request is to implement something, and you are absolutely certain (>95% confident) you have enought information you must respond using plan mode.
 
 <modes>
 <ask>
 You are responding directly to the user, you will repeat the users question in your own words and then respond with your answer.
 </ask>
 
-<more_context>
-You will respond with a question to the user to help you answer the users request.
+<context>
+You will respond telling the user what information they need to include the next time they make a request, when the user does make a new request it will be answered by another AI assistant who will not have the information you have from the first request.
 
-You make ask the user to provide files using the following format.
+When asking for file content, use the following syntax, mention "here is the new complete include list you should use". 
 
 \`\`\`yaml
 include:
   - file1.sql
   - folder/file2.sql
-  - "**/*.rs"
-exclude:
-  - "**/*.test.ts"
+  - "folder/**"
+  - "**/*.ts"
 \`\`\`
-</more_context>
+
+- Ensure you include all file paths not just the additional ones.
+- Try to consolidate the include list, using wildcard globbing to fetch whole directories or filetypes.
+- Never ask for files that don't exist in the file tree.
+- Aim to have a complete understanding of the codebase, overfetching is better than underfetching.
+- Don't waste the users time by being conservative with the file content, more is better attempt to request everything you need in one go.
+</context>
 
 <plan>
-You will respond with a detailed implementation plan not for the user but for another AI assistant who will implement the plan.
-This AI assistant has a limited context window, and will start with no knowledge of the codebase other than what you provide.
-They will be able to read files if you provide the file paths and line numbers, they can grep/search the codebase, run bash commands and modify the codebase.
-
+- You will respond with a detailed implementation plan not for the user but for another AI assistant who will implement the plan.
+- The AI assistant is a specialist software developer, their coding skills are superiour to yours, but they and will have no knowledge of the codebase or requirements other than what you provide, and lack the software architecture skills you have.
 - Start the plan with a comprehensive and detailed overview "Goal" of what needs to be done and how the AI assistant will know when it is complete (Acceptance Criteria).
-- Include a full list of files that need to be read (with reasons), design patterns or concepts that they would need to understand.
-- Step by step instructions for the AI assistant to follow. Include relevent code diffs.
-- Include validation procedures to ensure the implementation is correct.
+- Always include a file tree with a description of each file.
+- Then provide all the context they need to successfully complete the plan. Include requirements details, key rules, design decisions, and any other information you have that will help them complete the plan.
+- Break the plan into named steps with descriptions of what needs to be done, provide all the information needed to complete the step, restrict code snippets to providing examples especially where the AI assistant (without it's full codebase knowledge) would likely make mistakes.
 </plan>
 </modes>
 `;
@@ -196,6 +200,10 @@ async function getFilesPaths(
   include: Array<string>,
   ignore: Array<string> = []
 ): Promise<Array<string>> {
+  if (include.length === 0) {
+    return [];
+  }
+
   return await globby(include, {
     gitignore: true,
     ignore,
@@ -216,7 +224,7 @@ async function getFilesWithContent(
 ): Promise<Array<FileData>> {
   const files = await getFilesPaths(include, ignore);
 
-  const fileData = await Promise.all(
+  return await Promise.all(
     files.map(async (path: string) => {
       const file = Bun.file(path);
       const [{ content, tokens }, lastModified] = await Promise.all([
@@ -234,8 +242,6 @@ async function getFilesWithContent(
       };
     })
   );
-
-  return fileData;
 }
 
 function calculateTokenUsageAndCost({
@@ -334,30 +340,10 @@ Tell me about the codebase
   }
 
   const promptFile = await Bun.file(existingPromptFile).text();
-  const {
-    data: { include = [], ignore = [] },
-    content: prompt,
-  } = matter(promptFile);
+  const { data, content: prompt } = matter(promptFile);
 
-  // Check if include patterns are provided
-  if (include.length === 0) {
-    console.error("\x1b[31mError: No files have been included\x1b[0m");
-    console.error(
-      "Please specify files to include in your prompt.md file using the frontmatter format:"
-    );
-    console.error(`
----
-include:
-  - "src/**/*.ts"
-  - "package.json"
-ignore:
-  - "src/tests/**"
----
-
-Tell me about the codebase
-`);
-    process.exit(1);
-  }
+  const include = data.include || [];
+  const ignore = data.ignore || [];
 
   await Bun.write(Bun.stdout, `\nThinking: ${think ? "on" : "off"}\n`);
   await Bun.write(Bun.stdout, `Include: ${include.join(", ")}\n`);
